@@ -27,15 +27,20 @@ public class VersionBumper {
             System.out.printf("found text:%s at start:%d, end:%d", matcher.group(), matcher.start(), matcher.end());
         }*/
 
-        if(args.length<2) {
-            System.out.println("Usage: java VersionBumper {flavor} {path}!");
+        if (args.length < 2) {
+            System.out.printf("\nUsage: java %s {flavor} {path to build.gradle}", VersionBumper.class.getSimpleName());
+            System.out.printf("\ne.g. java %s nfl_det ./build.gradle if you're in the \"nbamobile/NBAMobile\" dir\n", VersionBumper.class.getSimpleName());
             System.exit(-1);
         }
 
-        VersionBumper b = new VersionBumper(args[0],args[1]);
+        VersionBumper b = new VersionBumper(args[0], args[1]);
 
 
 //        VersionBumper b = new VersionBumper("nba_phx", "/Users/kedarparanjape/projects/nbamobile/NBAMobile/build.gradle");
+        if (b.checkDirty(args[1])) {
+            System.out.println("Git directory unclean. Aborting");
+            System.exit(-3);
+        }
         VersionSet current = b.parse();
         VersionSet newVersion = current.increment();
         System.out.println("The current version is " + current);
@@ -44,8 +49,8 @@ public class VersionBumper {
             String choice = bufferedReader.readLine();
             if (choice != null) {
                 if (choice.trim().toLowerCase().equals("y")) {
-                    if(b.setVersion(current, newVersion)) {
-                        addToGit();
+                    if (b.setVersion(current, newVersion)) {
+                        addToGit(b.originalPath.getParent().toAbsolutePath().toString());
                     }
 //                    System.out.println("Status:" + ret);
                 } else {
@@ -70,21 +75,54 @@ public class VersionBumper {
 
     }
 
-    private static void addToGit() {
-        System.out.println("Adding to VCS");
+    /**
+     * Commits the change to vcs
+     * A note on the -C flag: It needs to be before any actual git commands. (e.g. git status -C {dir} won't work
+     * but git -C {dir} status will):
+     * See https://stackoverflow.com/a/20115678/1248068
+     *
+     * @param repoPath
+     */
+    private static void addToGit(String repoPath) {
+        System.out.println("Adding to Git");
         try {
             Runtime runtime = Runtime.getRuntime();
-            runtime.exec("git add .").waitFor(1,TimeUnit.SECONDS);
-            Process out= runtime.exec(new String[]{"git","commit","-m","Bump version for release"});
-            try(BufferedReader reader = new BufferedReader(new InputStreamReader(out.getInputStream()))) {
+            runtime.exec(new String[]{"git", "-C", repoPath, "add", "."}).waitFor(1, TimeUnit.SECONDS);
+            Process out = runtime.exec(new String[]{"git", "-C", repoPath, "commit", "-m", "Bump version for release"});
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(out.getInputStream()))) {
                 String line;
-                while((line=reader.readLine())!=null) {
+                while ((line = reader.readLine()) != null) {
                     System.out.println(line);
                 }
+                System.out.println("Remember to push to remote!");
             }
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Check if the git repo at path is dirty(Runs git status --porcelain to determine so)
+     *
+     * @return true if there is some issue with the git repo, false otherwise
+     */
+    private boolean checkDirty(String rawPath) {
+        try {
+            Path repoPath = Paths.get(rawPath);
+            Runtime runtime = Runtime.getRuntime();
+            Process out = runtime.exec(new String[]{"git", "-C", repoPath.getParent().toAbsolutePath().toString(), "status", "--porcelain"}); //changes to repo path via git -C
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(out.getInputStream()))) {
+                String processOut = reader.readLine();
+                if (processOut != null && !processOut.isEmpty()) {   //presence of content here means that git dir is bad
+                    System.out.println(processOut);
+                    return true;
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            return true;
+        }
+        return false;
     }
 
     private VersionBumper(String flavor, String strPath) {
@@ -217,14 +255,15 @@ public class VersionBumper {
             System.exit(-2);
             return false;
         }
-        System.out.println("Temporary file successfully created");
-        return overwriteOriginalFile();
-
+//        System.out.println("Temporary file successfully created");
+        boolean ret = overwriteOriginalFile();
+        deleteTemporaryFile();
+        return ret;
     }
 
     private boolean overwriteOriginalFile() {
         try {
-             Files.copy(TEMPORARY_FILE, originalPath,StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(TEMPORARY_FILE, originalPath, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             System.err.println("Error replacing original file with temporary file. Aborting");
             System.exit(-5);
@@ -232,6 +271,13 @@ public class VersionBumper {
             return false;
         }
         return true;
+    }
+
+    private void deleteTemporaryFile() {
+        try {
+            Files.deleteIfExists(TEMPORARY_FILE);
+        } catch (IOException ignored) {
+        }
     }
 
 
